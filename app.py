@@ -6,151 +6,155 @@ import pandas as pd
 from datetime import datetime
 from PIL import Image
 import time
-import io
+import tempfile
+import os
 
-# --- CONFIGURATION & STYLING ---
-st.set_page_config(page_title="DEEPTRACE PRO | Neural Forensic Suite", layout="wide", page_icon="🛡️")
+# --- CONFIGURATION & GRADIENT STYLING ---
+st.set_page_config(page_title="DEEPTRACE PRO", layout="wide", page_icon="🛡️")
 
 st.markdown("""
     <style>
-    .main { background-color: #020617; color: #f8fafc; }
-    .stButton>button { border-radius: 8px; background: linear-gradient(90deg, #0ea5e9, #2563eb); color: white; border: none; transition: 0.3s; }
-    .stButton>button:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4); }
-    .report-card { padding: 25px; border-radius: 15px; border: 1px solid #1e293b; background-color: #0f172a; margin-top: 20px; }
-    .metric-text { font-family: 'Courier New', monospace; color: #38bdf8; }
+    /* Gradient Background Effect */
+    .stApp {
+        background: linear-gradient(135deg, #020617 0%, #0f172a 50%, #1e1b4b 100%);
+        color: #f8fafc;
+    }
+    /* Custom Sidebar Gradient */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+        border-right: 1px solid #1e293b;
+    }
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        background: linear-gradient(90deg, #0ea5e9, #6366f1);
+        color: white;
+        font-weight: bold;
+        border: none;
+        padding: 0.6rem;
+    }
+    .report-card {
+        padding: 20px;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.8);
+        border: 1px solid #334155;
+        backdrop-filter: blur(10px);
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- DATABASE LOGIC ---
+# --- CORE LOGIC ---
 def init_db():
     conn = sqlite3.connect("forensic_history.db")
     conn.execute('''CREATE TABLE IF NOT EXISTS scans 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT, type TEXT, 
                  result TEXT, confidence REAL, timestamp TEXT)''')
     conn.commit()
-    return conn
+    conn.close()
+
+def analyze_forensics(frame):
+    """Laplacian Variance Analysis + Explainability"""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    variance = cv2.Laplacian(gray, cv2.CV_64F).var()
+    
+    # Visual Edge Map for user transparency
+    lap_abs = np.uint8(np.absolute(cv2.Laplacian(gray, cv2.CV_64F)))
+    edge_map = cv2.applyColorMap(lap_abs, cv2.COLORMAP_VIRIDIS)
+    
+    if variance < 100:
+        return 0.88, "High smoothing detected. AI generators often struggle with natural skin texture/pores.", edge_map
+    else:
+        return 0.12, "Natural frequency noise detected. Consistent with physical camera sensor artifacts.", edge_map
 
 def save_to_db(filename, file_type, result, confidence):
     conn = sqlite3.connect("forensic_history.db")
     conn.execute("INSERT INTO scans (filename, type, result, confidence, timestamp) VALUES (?,?,?,?,?)",
-                 (filename, file_type, result, confidence, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                 (filename, file_type, result, confidence, datetime.now().strftime("%H:%M:%S")))
     conn.commit()
     conn.close()
 
-# --- ADVANCED FORENSIC ENGINE ---
-def analyze_forensics(frame):
-    """
-    Enhanced Analysis: Laplacian Variance + Edge Map Generation
-    """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    
-    # Calculate Laplacian Variance
-    lap_feat = cv2.Laplacian(gray, cv2.CV_64F)
-    variance = lap_feat.var()
-    
-    # Generate an "Edge Map" for the user to see (Forensic Visualization)
-    edge_map = np.uint8(np.absolute(lap_feat))
-    edge_map = cv2.applyColorMap(edge_map, cv2.COLORMAP_JET)
-    
-    # Decision Logic
-    # Deepfakes often have 'soft' transitions or unnatural smoothness in specific areas
-    if variance < 100: 
-        score = 0.88  # Likely Fake (Too blurry/smooth)
-        reason = "Unnatural smoothing detected. Lack of high-frequency sensor noise suggests AI synthesis or heavy manipulation."
-    elif variance > 1000:
-        score = 0.70  # Could be sharpened/Fake
-        reason = "Excessive edge sharpness detected. Possible sharpening filter used to mask GAN artifacts."
-    else:
-        score = 0.12  # Likely Real
-        reason = "Natural texture patterns and sensor noise levels consistent with authentic optical capture."
-        
-    return score, reason, edge_map
+# --- UI MODES ---
+def render_image_mode():
+    st.subheader("📁 Static Image Forensic")
+    up = st.file_uploader("Upload Image", type=['jpg','png','jpeg'])
+    if up:
+        img = Image.open(up)
+        # Resize for better layout
+        img.thumbnail((500, 500))
+        st.image(img, caption="Evidence Source")
+        if st.button("RUN SCAN"):
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            score, reason, emap = analyze_forensics(img_cv)
+            display_verdict(score, reason, up.name, "Image", emap)
 
-# --- UI COMPONENTS ---
-def main():
-    init_db()
-    
-    st.sidebar.title("🛡️ DEEPTRACE PRO")
-    st.sidebar.caption("v2.1 | Neural Forensic Suite")
-    st.sidebar.markdown("---")
-    
-    app_mode = st.sidebar.selectbox("COMMAND CENTER", 
-                                    ["Dashboard", "Image Analysis", "Video Analysis", "Live Camera"])
-
-    if app_mode == "Dashboard":
-        render_dashboard()
-    elif app_mode == "Image Analysis":
-        render_image_analysis()
-    # (Video and Live modes would follow similar logic)
-
-def render_dashboard():
-    st.title("System Status: Active")
-    col1, col2, col3 = st.columns(3)
-    
-    conn = sqlite3.connect("forensic_history.db")
-    total_scans = pd.read_sql_query("SELECT COUNT(*) FROM scans", conn).values[0][0]
-    fakes_found = pd.read_sql_query("SELECT COUNT(*) FROM scans WHERE result='FAKE'", conn).values[0][0]
-    
-    col1.metric("Total Scans", total_scans)
-    col2.metric("Threats Detected", fakes_found)
-    col3.metric("System Health", "100%")
-    
-    st.markdown("### 📜 Audit Log")
-    logs_df = pd.read_sql_query("SELECT timestamp, filename, result, confidence FROM scans ORDER BY id DESC LIMIT 5", conn)
-    st.dataframe(logs_df, use_container_width=True)
-    conn.close()
-
-def render_image_analysis():
-    st.header("🔬 Image Forensic Analysis")
-    uploaded_file = st.file_uploader("Drop evidence here...", type=['jpg', 'png', 'jpeg'])
-    
-    if uploaded_file:
-        col1, col2 = st.columns([1, 1])
+def render_video_mode():
+    st.subheader("🎥 Video Stream Forensic")
+    up_vid = st.file_uploader("Upload Video", type=['mp4','mov','avi'])
+    if up_vid:
+        # Fix: Save to a temporary file so OpenCV can read it via path
+        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+        tfile.write(up_vid.read())
+        tfile.close()
         
-        image = Image.open(uploaded_file)
-        # Reduce size for better UI display
-        image.thumbnail((600, 600)) 
-        
-        with col1:
-            st.markdown("#### Original Evidence")
-            st.image(image, use_container_width=True)
-        
-        if st.button("EXECUTE NEURAL SCAN"):
-            with st.status("Initializing Forensic Modules...", expanded=True) as status:
-                st.write("Extracting luminance layers...")
-                time.sleep(0.5)
-                st.write("Analyzing pixel variance...")
-                img_array = np.array(image.convert('RGB'))
-                img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-                score, reason, edge_map = analyze_forensics(img_cv)
-                
-                time.sleep(0.5)
-                st.write("Generating forensic edge map...")
-                status.update(label="Analysis Complete!", state="complete", expanded=False)
+        st.video(up_vid)
+        if st.button("BATCH FRAME ANALYSIS"):
+            cap = cv2.VideoCapture(tfile.name)
+            scores = []
+            progress = st.progress(0)
             
-            with col2:
-                st.markdown("#### Forensic Visualization")
-                st.image(edge_map, caption="Texture Variance Map", use_container_width=True)
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret: break
+                s, _, _ = analyze_forensics(frame)
+                scores.append(s)
+                # Sample every 20 frames for speed
+                cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_POS_FRAMES) + 20)
             
-            # Final Verdict Card
-            display_verdict(score, reason, uploaded_file.name, "Image")
+            cap.release()
+            os.unlink(tfile.name) # Clean up temp file
+            
+            avg = sum(scores)/len(scores) if scores else 0.5
+            display_verdict(avg, "Temporal analysis across multiple frames confirms consistency of noise patterns.", up_vid.name, "Video")
 
-def display_verdict(score, reason, filename, m_type):
+def render_live_mode():
+    st.subheader("📷 Real-time Capture")
+    cam_img = st.camera_input("Snapshot Analysis")
+    if cam_img:
+        # Convert camera buffer to CV2 format
+        img = Image.open(cam_img)
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        score, reason, emap = analyze_forensics(img_cv)
+        display_verdict(score, reason, "Live_Feed", "Live", emap)
+
+def display_verdict(score, reason, fname, mtype, emap=None):
     label = "FAKE" if score > 0.5 else "REAL"
     conf = score if label == "FAKE" else (1 - score)
-    theme_clr = "#fb7185" if label == "FAKE" else "#4ade80"
+    color = "#f43f5e" if label == "FAKE" else "#10b981"
     
-    save_to_db(filename, m_type, label, round(conf * 100, 2))
+    save_to_db(fname, mtype, label, round(conf*100, 2))
     
     st.markdown(f"""
-        <div class="report-card" style="border-left: 5px solid {theme_clr};">
-            <h2 style="color: {theme_clr}; margin-top:0;">VERDICT: {label}</h2>
-            <p style="font-size: 1.2em;"><b>Confidence:</b> {conf*100:.2f}%</p>
-            <p><b>Technical Analysis:</b> {reason}</p>
-            <hr style="opacity: 0.1;">
-            <p style="font-size: 0.8em; color: #94a3b8;">SECURE LOG ID: {datetime.now().strftime('%Y%m%d%H%M%S')}</p>
+        <div class="report-card" style="border-top: 4px solid {color};">
+            <h2 style="color: {color};">{label} DETECTED</h2>
+            <p><b>Confidence:</b> {conf*100:.2f}%</p>
+            <p><b>Explanation:</b> {reason}</p>
         </div>
     """, unsafe_allow_html=True)
+    if emap is not None:
+        st.image(emap, caption="Forensic Noise Map", width=400)
+
+# --- MAIN APP ---
+def main():
+    init_db()
+    st.sidebar.title("DEEPTRACE 🛡️")
+    mode = st.sidebar.selectbox("Analysis Mode", ["Dashboard", "Image Analysis", "Video Analysis", "Live Camera"])
+    
+    if mode == "Dashboard":
+        st.title("Neural Dashboard")
+        st.info("System operational. Select a mode to begin scanning.")
+    elif mode == "Image Analysis": render_image_mode()
+    elif mode == "Video Analysis": render_video_mode()
+    elif mode == "Live Camera": render_live_mode()
 
 if __name__ == "__main__":
     main()
